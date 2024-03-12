@@ -78,21 +78,13 @@ def run_nft(*args):
 def cleanup_rooter():
     """Filter out all CAPE rooter entries from iptables-save and
     restore the resulting ruleset."""
-    if(False):
-        stdout = False
-        try:
-            stdout, _ = run(s.iptables_save)
-        except OSError as e:
-            log.error("Failed to clean CAPE rooter rules. Is iptables-save available? %s", e)
-            return
+    if(s.iptables):
+        _cleanup_rooter_ipt()
+    else:
+        _cleanup_rooter_nft()
+        
 
-        if not stdout:
-            return
-
-        cleaned = [line for line in stdout.split("\n") if line and "CAPE-rooter" not in line]
-
-        p = subprocess.Popen([s.iptables_restore], stdin=subprocess.PIPE, universal_newlines=True)
-        p.communicate(input="\n".join(cleaned))
+def _cleanup_rooter_nft():
     run_nft("flush", "table", "cape_filter")
     run_nft("delete", "table", "cape_filter")
     chain, err = run_nft("list", "chain", "ip", "filter", "forward")
@@ -105,7 +97,23 @@ def cleanup_rooter():
     run_nft("add", "chain", "ip", "cape_filter", "postrouting", "{type nat hook postrouting priority 100;}")
     run_nft("add", "chain", "ip", "cape_filter", "prerouting", "{type nat hook prerouting priority -100;}")
     run_nft("add", "chain", "ip", "cape_filter", "output", "{type filter hook output priority 0;}")
+    
 
+def _cleanup_rooter_ipt():
+    stdout = False
+    try:
+        stdout, _ = run(s.iptables_save)
+    except OSError as e:
+        log.error("Failed to clean CAPE rooter rules. Is iptables-save available? %s", e)
+        return
+
+    if not stdout:
+        return
+
+    cleaned = [line for line in stdout.split("\n") if line and "CAPE-rooter" not in line]
+
+    p = subprocess.Popen([s.iptables_restore], stdin=subprocess.PIPE, universal_newlines=True)
+    p.communicate(input="\n".join(cleaned))
 
 
 def nic_available(interface):
@@ -146,47 +154,91 @@ def vpn_status(name):
 
 def forward_drop():
     """Disable any and all forwarding unless explicitly said so."""
-    if(False):
-        run_iptables("-P", "FORWARD", "DROP")
+    if(s.iptables):
+        _forward_drop_ipt()
+    else:
+        _forward_drop_nft()
+        
+    
+def _forward_drop_nft():
     run_nft("add", "chain", "ip", "cape_filter", "forward", "{type filter hook forward priority 0; policy drop;}")
-    run_nft("insert", "rule", "ip", "filter", "FORWARD", "meta mark == 0x00000f00", "counter", "accept", "comment cape_filter") # need for pass LIBVIRT rules.
+    run_nft("insert", "rule", "ip", "filter", "FORWARD", "meta mark == 0x00000f00", "accept", "comment cape_filter") # need for pass LIBVIRT rules.
+
+def _forward_drop_ipt():
+    run_iptables("-P", "FORWARD", "DROP")
 
 
 def state_enable():
     """Enable stateful connection tracking."""
-    if(False):
-        run_iptables("-A", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+    if(s.iptables):
+        _state_enable_ipt()
+    else:
+        _state_enable_nft()
+    
+
+def _state_enable_nft():
     run_nft("add", "rule", "ip", "cape_filter", "input", "ct state", "established,related", "accept")
+
+
+def _state_enable_ipt():
+    run_iptables("-A", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
 
 
 def state_disable():
     """Disable stateful connection tracking."""
-    if(False):
-        while True:
-            _, err = run_iptables("-D", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
-            if err:
-                break
-        chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
-        handlers = re.findall(r".*ct state established,related accept # handle ([0-9]+)", chain)
-        for handle in handlers:
-            run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+    if(s.iptables):
+        _state_disable_ipt()
+    else:
+        _state_disable_nft()
+
+
+def _state_disable_nft():
+    chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
+    handlers = re.findall(r".*ct state established,related accept # handle ([0-9]+)", chain)
+    for handle in handlers:
+        run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+
+
+def _state_disable_ipt():
+    while True:
+        _, err = run_iptables("-D", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+        if err:
+            break
 
 
 def enable_nat(interface):
     """Enable NAT on this interface."""
-    if(False):
-        run_iptables("-t", "nat", "-A", "POSTROUTING", "-o", interface, "-j", "MASQUERADE")
+    if(s.iptables):
+        _enable_nat_ipt(**locals())
+    else:
+        _enable_nat_nft(**locals())
+        
+
+def _enable_nat_nft(interface):
     run_nft("add", "rule", "ip", "cape_filter", "postrouting", "oifname", interface, "masquerade")
+
+
+def _enable_nat_ipt(interface):
+    run_iptables("-t", "nat", "-A", "POSTROUTING", "-o", interface, "-j", "MASQUERADE")
 
 
 def disable_nat(interface):
     """Disable NAT on this interface."""
-    if(False):
-        run_iptables("-t", "nat", "-D", "POSTROUTING", "-o", interface, "-j", "MASQUERADE")
+    if(s.iptables):
+        _disable_nat_ipt(**locals())
+    else:
+        _disable_nat_nft(**locals())
+
+
+def _disable_nat_nft(interface):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "postrouting")
     handlers = re.findall(r".*oifname \"{interface}\" masquerade # handle ([0-9]+)".format(interface=interface), chain)
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+
+
+def _disable_nat_ipt(interface):
+    run_iptables("-t", "nat", "-D", "POSTROUTING", "-o", interface, "-j", "MASQUERADE")
 
 
 def init_rttable(rt_table, interface):
@@ -213,29 +265,42 @@ def flush_rttable(rt_table):
 def forward_enable(src, dst, ipaddr):
     """Enable forwarding a specific IP address from one interface into
     another."""
-    # Delete libvirt's default FORWARD REJECT rules. e.g.:
-    # -A FORWARD -o virbr0 -j REJECT --reject-with icmp-port-unreachable
-    # -A FORWARD -i virbr0 -j REJECT --reject-with icmp-port-unreachable
-    if(False):
-        run_iptables("-D", "FORWARD", "-i", src, "-j", "REJECT")
-        run_iptables("-D", "FORWARD", "-o", src, "-j", "REJECT")
-        run_iptables("-I", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "-j", "ACCEPT")
-        run_iptables("-I", "FORWARD", "-i", dst, "-o", src, "--destination", ipaddr, "-j", "ACCEPT")
+    if(s.iptables):
+        _forward_enable_ipt(**locals())
+    else:
+        _forward_enable_nft(**locals())
+
+
+def _forward_enable_nft(src, dst, ipaddr):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     handlers = re.findall(r".*iifname \"{interface}\" reject # handle ([0-9]+)".format(interface=src), chain)
     handlers.extend(re.findall(r".*oifname \"{interface}\" reject # handle ([0-9]+)".format(interface=src), chain))
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
-    run_nft("add", "rule", "ip", "cape_filter", "forward", "ip saddr", ipaddr, "iifname", src, "oifname", dst, "meta mark set 0x00000f00", "counter", "accept")
-    run_nft("add", "rule", "ip", "cape_filter", "forward", "ip daddr", ipaddr, "iifname", dst, "oifname", src, "meta mark set 0x00000f00", "counter", "accept")
+    run_nft("add", "rule", "ip", "cape_filter", "forward", "ip saddr", ipaddr, "iifname", src, "oifname", dst, "meta mark set 0x00000f00", "accept")
+    run_nft("add", "rule", "ip", "cape_filter", "forward", "ip daddr", ipaddr, "iifname", dst, "oifname", src, "meta mark set 0x00000f00", "accept")
+
+
+def _forward_enable_ipt(src, dst, ipaddr):
+    # Delete libvirt's default FORWARD REJECT rules. e.g.:
+    # -A FORWARD -o virbr0 -j REJECT --reject-with icmp-port-unreachable
+    # -A FORWARD -i virbr0 -j REJECT --reject-with icmp-port-unreachable
+    run_iptables("-D", "FORWARD", "-i", src, "-j", "REJECT")
+    run_iptables("-D", "FORWARD", "-o", src, "-j", "REJECT")
+    run_iptables("-I", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "-j", "ACCEPT")
+    run_iptables("-I", "FORWARD", "-i", dst, "-o", src, "--destination", ipaddr, "-j", "ACCEPT")
 
 
 def forward_disable(src, dst, ipaddr):
     """Disable forwarding of a specific IP address from one interface into
     another."""
-    if(False):
-        run_iptables("-D", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "-j", "ACCEPT")
-        run_iptables("-D", "FORWARD", "-i", dst, "-o", src, "--destination", ipaddr, "-j", "ACCEPT")
+    if(s.iptables):
+        _forward_disable_ipt(**locals())
+    else:
+        _forward_disable_nft(**locals())
+        
+
+def _forward_disable_nft(src, dst, ipaddr):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     if not err:
         handlers = re.findall(r".*ip saddr {ipaddr} iifname \"{src}\" oifname \"{dst}\" meta mark 0x00000f00 accept # handle ([0-9]+)".format(ipaddr=ipaddr, src=src, dst=dst), chain)
@@ -244,50 +309,92 @@ def forward_disable(src, dst, ipaddr):
             run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
 
 
+def _forward_disable_ipt(src, dst, ipaddr):
+    run_iptables("-D", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "-j", "ACCEPT")
+    run_iptables("-D", "FORWARD", "-i", dst, "-o", src, "--destination", ipaddr, "-j", "ACCEPT")
+
+
 def forward_reject_enable(src, dst, ipaddr, reject_segments):
     """Enable forwarding a specific IP address from one interface into another
     but reject some targets network segments."""
-    if(False):
-        run_iptables("-I", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "--destination", reject_segments, "-j", "REJECT")
+    if(s.iptables):
+        _forward_reject_enable_ipt(**locals())
+    else:
+        _forward_reject_enable_nft(**locals())
+        
+    
+def _forward_reject_enable_nft(src, dst, ipaddr, reject_segments):
     run_nft("add", "rule", "ip", "cape_filter", "forward", "ip saddr", ipaddr, "ip daddr", reject_segments, "iifname", src, "oifname", dst, "reject")
+
+
+def _forward_reject_enable_ipt(src, dst, ipaddr, reject_segments):
+    run_iptables("-I", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "--destination", reject_segments, "-j", "REJECT")
+
 
 def forward_reject_disable(src, dst, ipaddr, reject_segments):
     """Disable forwarding a specific IP address from one interface into another
     but reject some targets network segments."""
-    if(False):
-        run_iptables("-D", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "--destination", reject_segments, "-j", "REJECT")
+    if(s.iptables):
+        _forward_reject_disable_ipt(**locals())
+    else:
+        _forward_reject_disable_nft(**locals())
+        
+
+def _forward_reject_disable_nft(src, dst, ipaddr, reject_segments):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     handlers = re.findall(r".*ip saddr {ipaddr} ip daddr {reject_segments} iifname \"{src}\" oifname \"{dst}\" reject # handle ([0-9]+)".format(ipaddr=ipaddr, reject_segments=reject_segments, src=src, dst=dst), chain)
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
 
 
+def _forward_reject_disable_ipt(src, dst, ipaddr, reject_segments):
+    run_iptables("-D", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "--destination", reject_segments, "-j", "REJECT")
+
+
 def hostports_reject_enable(src, ipaddr, reject_hostports):
     """Enable drop a specific IP address from one interface to host ports."""
-    if(False):
-        run_iptables(
-            "-A", "INPUT", "-i", src, "--source", ipaddr, "-p", "tcp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
-        )
-        run_iptables(
-            "-A", "INPUT", "-i", src, "--source", ipaddr, "-p", "udp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
-        )
+    if(s.iptables):
+        _hostports_reject_enable_ipt(**locals())
+    else:
+        _hostports_reject_enable_nft(**locals())
+        
+    
+def _hostports_reject_enable_nft(src, ipaddr, reject_hostports):
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "tcp dport {", reject_hostports, "} iifname", src, "reject")
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "udp dport {", reject_hostports, "} iifname", src, "reject")
 
 
+def _hostports_reject_enable_ipt(src, ipaddr, reject_hostports):
+    run_iptables(
+        "-A", "INPUT", "-i", src, "--source", ipaddr, "-p", "tcp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
+    )
+    run_iptables(
+        "-A", "INPUT", "-i", src, "--source", ipaddr, "-p", "udp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
+    )
+
+
 def hostports_reject_disable(src, ipaddr, reject_hostports):
     """Disable drop a specific IP address from one interface to host ports."""
-    if(False):
-        run_iptables(
-            "-D", "INPUT", "-i", src, "--source", ipaddr, "-p", "tcp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
-        )
-        run_iptables(
-            "-D", "INPUT", "-i", src, "--source", ipaddr, "-p", "udp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
-        )
+    if(s.iptables):
+        _hostports_reject_disable_ipt(**locals())
+    else:
+        _hostports_reject_disable_nft(**locals())
+        
+
+def _hostports_reject_disable_nft(src, ipaddr, reject_hostports):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport {reject_hostports} iifname \"{src}\" reject # handle ([0-9]+)".format(ipaddr=ipaddr, reject_hostports=reject_hostports, src=src), chain)
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+
+
+def _hostports_reject_disable_ipt(src, ipaddr, reject_hostports):
+    run_iptables(
+        "-D", "INPUT", "-i", src, "--source", ipaddr, "-p", "tcp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
+    )
+    run_iptables(
+        "-D", "INPUT", "-i", src, "--source", ipaddr, "-p", "udp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
+    )
 
 
 def srcroute_enable(rt_table, ipaddr):
@@ -304,43 +411,51 @@ def srcroute_disable(rt_table, ipaddr):
 
 def dns_forward(action, vm_ip, dns_ip, dns_port="53"):
     """Route DNS requests from the VM to a custom DNS on a separate network."""
-    if(False):
-        run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "-p",
-            "tcp",
-            "--dport",
-            "53",
-            "--source",
-            vm_ip,
-            "-j",
-            "DNAT",
-            "--to-destination",
-            "%s:%s" % (dns_ip, dns_port),
-        )
+    if(s.iptables):
+        _dns_forward_ipt(**locals())
+    else:
+        _dns_forward_nft(**locals())
 
-        run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "-p",
-            "udp",
-            "--dport",
-            "53",
-            "--source",
-            vm_ip,
-            "-j",
-            "DNAT",
-            "--to-destination",
-            "%s:%s" % (dns_ip, dns_port),
-        )
+
+def _dns_forward_nft(action, vm_ip, dns_ip, dns_port="53"):
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", vm_ip, "tcp dport", "53", "dnat to", f"{dns_ip}:{dns_port}")
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", vm_ip, "udp dport", "53", "dnat to", f"{dns_ip}:{dns_port}")
 
+
+def _dns_forward_ipt(action, vm_ip, dns_ip, dns_port="53"):
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "-p",
+        "tcp",
+        "--dport",
+        "53",
+        "--source",
+        vm_ip,
+        "-j",
+        "DNAT",
+        "--to-destination",
+        "%s:%s" % (dns_ip, dns_port),
+    )
+
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "-p",
+        "udp",
+        "--dport",
+        "53",
+        "--source",
+        vm_ip,
+        "-j",
+        "DNAT",
+        "--to-destination",
+        "%s:%s" % (dns_ip, dns_port),
+    )
 
 def inetsim_redirect_port(action, srcip, dstip, ports):
     """Note that the parameters (probably) mean the opposite of what they
@@ -378,77 +493,128 @@ def inetsim_redirect_port(action, srcip, dstip, ports):
             if not srcport.isdigit():
                 log.debug("Invalid inetsim srcport entry: %s", srcport)
                 continue
-        # run_iptables(
-        #     "-t",
-        #     "nat",
-        #     action,
-        #     "PREROUTING",
-        #     "--source",
-        #     srcip,
-        #     "-p",
-        #     "tcp",
-        #     "--syn",
-        #     "--dport",
-        #     srcport,
-        #     "-j",
-        #     "DNAT",
-        #     "--to-destination",
-        #     "%s:%s" % (dstip, dstport),
-        # )
+
+        if(s.iptables):
+            _inetsim_redirect_port_ipt(**locals())
+        else:
+            _inetsim_redirect_port_nft(**locals())
+        
+
+def _inetsim_redirect_port_nft(action, srcip, dstip, srcport, dstport):
+    if(action == "-A"):
         run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", srcip, "tcp dport", srcport, "tcp flags", "syn", "dnat to", f"{dstip}:{dstport}")
+    if(action == "-D"):
+        chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
+        handlers = re.findall(r".*ip saddr {srcip} tcp dport {srcport} tcp flags syn dnat to {dstip}:{dstport} # handle ([0-9]+)".format(srcip=srcip, srcport=srcport, dstip=dstip, dstport=dstport), chain)
+        for handle in handlers:
+            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+
+
+def _inetsim_redirect_port_ipt(action, srcip, dstip, srcport, dstport):
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "--source",
+        srcip,
+        "-p",
+        "tcp",
+        "--syn",
+        "--dport",
+        srcport,
+        "-j",
+        "DNAT",
+        "--to-destination",
+        "%s:%s" % (dstip, dstport),
+    )
 
 
 def inetsim_service_port_trap(action, srcip, dstip, protocol):
     # Note that the multiport limit for ports specified is 15,
     # so we will split this up into two rules
-    if(False):
-        run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "--source",
-            srcip,
-            "-p",
-            protocol,
-            "-m",
-            "multiport",
-            "--dports",
-            # The following ports are used for default services on Ubuntu
-            "7,9,13,17,19,21,22,25,37,69,79,80,110,113",
-            "-j",
-            "DNAT",
-            "--to-destination",
-            dstip,
-        )
-        run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "--source",
-            srcip,
-            "-p",
-            protocol,
-            "-m",
-            "multiport",
-            "--dports",
-            # The following ports are used for default services on Ubuntu
-            "123,443,465,514,990,995,6667",
-            "-j",
-            "DNAT",
-            "--to-destination",
-            dstip,
-        )
-    run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", srcip, protocol, "dport {7,9,13,17,19,21,22,25,37,69,79,80,110,113,123,443,465,514,990,995,6667}", "dnat to", dstip)
+    if(s.iptables):
+        _inetsim_service_port_trap_ipt(**locals())
+    else:
+        _inetsim_service_port_trap_nft(**locals())
+        
+
+def _inetsim_service_port_trap_nft(action, srcip, dstip, protocol):
+    if(action == '-A'):
+        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", srcip, protocol, "dport {7,9,13,17,19,21,22,25,37,69,79,80,110,113,123,443,465,514,990,995,6667}", "dnat to", dstip)
+    if(action == "-D"):
+        chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
+        handlers = re.findall(r".*ip saddr {srcip} {protocol} dport {7,9,13,17,19,21,22,25,37,69,79,80,110,113,123,443,465,514,990,995,6667} dnat to {dstip} # handle ([0-9]+)".format(srcip=srcip, protocol=protocol, dstip=dstip), chain)
+        for handle in handlers:
+            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+
+
+def _inetsim_service_port_trap_ipt(action, srcip, dstip, protocol):
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "--source",
+        srcip,
+        "-p",
+        protocol,
+        "-m",
+        "multiport",
+        "--dports",
+        # The following ports are used for default services on Ubuntu
+        "7,9,13,17,19,21,22,25,37,69,79,80,110,113",
+        "-j",
+        "DNAT",
+        "--to-destination",
+        dstip,
+    )
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "--source",
+        srcip,
+        "-p",
+        protocol,
+        "-m",
+        "multiport",
+        "--dports",
+        # The following ports are used for default services on Ubuntu
+        "123,443,465,514,990,995,6667",
+        "-j",
+        "DNAT",
+        "--to-destination",
+        dstip,
+    )
 
 
 def inetsim_trap(action, ipaddr, inetsim_ip, resultserver_port):
     # There are four options for protocol in iptables: tcp, udp, icmp and all
     # Since we want tcp, udp and icmp to be configured differently, we cannot use all
     # tcp
-    if(False):
-        run_iptables(
+    if(s.iptables):
+        _inetsim_trap_ipt(**locals())
+    else:
+        _inetsim_trap_nft(**locals())
+    
+
+def _inetsim_trap_nft(action, ipaddr, inetsim_ip, resultserver_port):
+    if(action == "-A"):
+        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport !=", resultserver_port, "tcp flags", "syn", "dnat to", f"{inetsim_ip}:1")
+        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "udp dport !=", resultserver_port, "tcp flags", "syn", "dnat to", f"{inetsim_ip}:1")
+        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "icmp", "dnat to", f"{inetsim_ip}:1")
+    if(action == "-D"):
+        chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
+        handlers = re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport != {resultserver_port} tcp flags syn dnat to {inetsim_ip}:1 # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port, inetsim_ip=inetsim_ip), chain)
+        handlers.extend(re.findall(r".*ip saddr {ipaddr} icmp dnat to {inetsim_ip}:1 # handle ([0-9]+)".format(ipaddr=ipaddr, inetsim_ip=inetsim_ip), chain))
+        for handle in handlers:
+            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+
+
+def _inetsim_trap_ipt(action, ipaddr, inetsim_ip, resultserver_port):
+    run_iptables(
             "-t",
             "nat",
             action,
@@ -503,16 +669,6 @@ def inetsim_trap(action, ipaddr, inetsim_ip, resultserver_port):
             "--to-destination",
             "%s:%s" % (inetsim_ip, "1"),
         )
-    if(action == "-A"):
-        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport !=", resultserver_port, "tcp flags", "syn", "dnat to", f"{inetsim_ip}:1")
-        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "udp dport !=", resultserver_port, "tcp flags", "syn", "dnat to", f"{inetsim_ip}:1")
-        run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "icmp", "dnat to", f"{inetsim_ip}:1")
-    if(action == "-D"):
-        chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
-        handlers = re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport != {resultserver_port} tcp flags syn dnat to {inetsim_ip}:1 # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port, inetsim_ip=inetsim_ip), chain)
-        handlers.extend(re.findall(r".*ip saddr {ipaddr} icmp dnat to {inetsim_ip}:1 # handle ([0-9]+)".format(ipaddr=ipaddr, inetsim_ip=inetsim_ip), chain))
-        for handle in handlers:
-            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
 
 
 def inetsim_enable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
@@ -524,14 +680,26 @@ def inetsim_enable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     dns_forward("-A", ipaddr, inetsim_ip, dns_port)
     inetsim_trap("-A", ipaddr, inetsim_ip, resultserver_port)
     # INetSim does not have an SSH service, so SSH traffic can get through to the host. We want to block this.
-    if(False):
-        run_iptables("-A", "INPUT", "--source", ipaddr, "-p", "tcp", "-m", "tcp", "--dport", "22", "-j", "DROP")
-        run_iptables("-A", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
-        run_iptables("-A", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
-        run_iptables("-A", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+    if(s.iptables):
+        _inetsim_enable_ipt(**locals())
+    else:
+        _inetsim_enable_nft(**locals())
+        
+    
+
+
+def _inetsim_enable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "tcp dport", 22, "drop")
     run_nft("add", "rule", "ip", "cape_filter", "output", "ct state", "invalid", "drop")
     run_nft("add", "rule", "ip", "cape_filter", "output", "ip saddr", ipaddr, "drop")
+
+
+def _inetsim_enable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
+    run_iptables("-A", "INPUT", "--source", ipaddr, "-p", "tcp", "-m", "tcp", "--dport", "22", "-j", "DROP")
+    run_iptables("-A", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
+    run_iptables("-A", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
+    run_iptables("-A", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+
 
 def inetsim_disable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     """Disable hijacking of all traffic and send it to InetSIM."""
@@ -541,11 +709,13 @@ def inetsim_disable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     inetsim_service_port_trap("-D", ipaddr, inetsim_ip, "udp")
     dns_forward("-D", ipaddr, inetsim_ip, dns_port)
     inetsim_trap("-D", ipaddr, inetsim_ip, resultserver_port)
-    if(False):
-        run_iptables("-D", "INPUT", "--source", ipaddr, "-p", "tcp", "-m", "tcp", "--dport", "22", "-j", "DROP")
-        run_iptables("-D", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
-        run_iptables("-D", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
-        run_iptables("-D", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+    if(s.iptables):
+        _inetsim_disable_ipt(**locals())
+    else:
+        _inetsim_disable_nft(**locals())
+        
+
+def _inetsim_disable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp dport 22 drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain)
     for handle in handlers:
@@ -556,37 +726,24 @@ def inetsim_disable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
 
+
+def _inetsim_disable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
+    run_iptables("-D", "INPUT", "--source", ipaddr, "-p", "tcp", "-m", "tcp", "--dport", "22", "-j", "DROP")
+    run_iptables("-D", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
+    run_iptables("-D", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
+    run_iptables("-D", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+
+
 def socks5_enable(ipaddr, resultserver_port, dns_port, proxy_port):
     """Enable hijacking of all traffic and send it to socks5."""
     log.info("Enabling socks route.")
-    if(False):
-        run_iptables(
-            "-t",
-            "nat",
-            "-I",
-            "PREROUTING",
-            "--source",
-            ipaddr,
-            "-p",
-            "tcp",
-            "--syn",
-            "!",
-            "--dport",
-            resultserver_port,
-            "-j",
-            "REDIRECT",
-            "--to-ports",
-            proxy_port,
-        )
-        run_iptables("-I", "OUTPUT", "1", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
-        run_iptables("-I", "OUTPUT", "2", "-m", "state", "--state", "INVALID", "-j", "DROP")
-        run_iptables(
-            "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
-        )
-        run_iptables(
-            "-t", "nat", "-A", "PREROUTING", "-p", "udp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
-        )
-        run_iptables("-A", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+    if(s.iptables):
+        _socks5_enable_ipt(**locals())
+    else:
+        _socks5_enable_nft(**locals())
+
+
+def _socks5_enable_nft(ipaddr, resultserver_port, dns_port, proxy_port):
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp flags", "syn", "tcp dport !=", resultserver_port, "redirect to", proxy_port)
     run_nft("insert", "rule", "ip", "cape_filter", "output", "ct state", "invalid", "drop")
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport", 53, "redirect to", dns_port)
@@ -594,37 +751,46 @@ def socks5_enable(ipaddr, resultserver_port, dns_port, proxy_port):
     run_nft("add", "rule", "ip", "cape_filter", "output", "ip saddr", ipaddr, "drop")
 
 
+def _socks5_enable_ipt(ipaddr, resultserver_port, dns_port, proxy_port):
+    run_iptables(
+        "-t",
+        "nat",
+        "-I",
+        "PREROUTING",
+        "--source",
+        ipaddr,
+        "-p",
+        "tcp",
+        "--syn",
+        "!",
+        "--dport",
+        resultserver_port,
+        "-j",
+        "REDIRECT",
+        "--to-ports",
+        proxy_port,
+    )
+    run_iptables("-I", "OUTPUT", "1", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
+    run_iptables("-I", "OUTPUT", "2", "-m", "state", "--state", "INVALID", "-j", "DROP")
+    run_iptables(
+        "-t", "nat", "-A", "PREROUTING", "-p", "tcp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
+    )
+    run_iptables(
+        "-t", "nat", "-A", "PREROUTING", "-p", "udp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
+    )
+    run_iptables("-A", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+
+
 def socks5_disable(ipaddr, resultserver_port, dns_port, proxy_port):
     """Enable hijacking of all traffic and send it to socks5."""
     log.info("Disabling socks route.")
-    if(False):
-        run_iptables(
-            "-t",
-            "nat",
-            "-D",
-            "PREROUTING",
-            "--source",
-            ipaddr,
-            "-p",
-            "tcp",
-            "--syn",
-            "!",
-            "--dport",
-            resultserver_port,
-            "-j",
-            "REDIRECT",
-            "--to-ports",
-            proxy_port,
-        )
-        run_iptables("-D", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
-        run_iptables("-D", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
-        run_iptables(
-            "-t", "nat", "-D", "PREROUTING", "-p", "tcp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
-        )
-        run_iptables(
-            "-t", "nat", "-D", "PREROUTING", "-p", "udp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
-        )
-        run_iptables("-D", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+    if(s.iptables):
+        _socks5_disable_ipt(**locals())
+    else:
+        _socks5_disable_nft(**locals())
+
+
+def _socks5_disable_nft(ipaddr, resultserver_port, dns_port, proxy_port):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp flags syn tcp dport != {resultserver_port} redirect to {proxy_port} # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port, proxy_port=proxy_port), chain)
     handlers.extend(re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport 53 redirect to {dns_port} # handle ([0-9]+)".format(ipaddr=ipaddr, dns_port=dns_port), chain))
@@ -636,17 +802,44 @@ def socks5_disable(ipaddr, resultserver_port, dns_port, proxy_port):
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
 
 
+def _socks5_disable_ipt(ipaddr, resultserver_port, dns_port, proxy_port):
+    run_iptables(
+        "-t",
+        "nat",
+        "-D",
+        "PREROUTING",
+        "--source",
+        ipaddr,
+        "-p",
+        "tcp",
+        "--syn",
+        "!",
+        "--dport",
+        resultserver_port,
+        "-j",
+        "REDIRECT",
+        "--to-ports",
+        proxy_port,
+    )
+    run_iptables("-D", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
+    run_iptables("-D", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
+    run_iptables(
+        "-t", "nat", "-D", "PREROUTING", "-p", "tcp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
+    )
+    run_iptables(
+        "-t", "nat", "-D", "PREROUTING", "-p", "udp", "--dport", "53", "--source", ipaddr, "-j", "REDIRECT", "--to-ports", dns_port
+    )
+    run_iptables("-D", "OUTPUT", "--source", ipaddr, "-j", "DROP")
+
+
 def drop_enable(ipaddr, resultserver_port):
-    if(False):
-        run_iptables(
-            "-t", "nat", "-I", "PREROUTING", "--source", ipaddr, "-p", "tcp", "--syn", "--dport", resultserver_port, "-j", "ACCEPT"
-        )
-        run_iptables("-A", "INPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
-        run_iptables("-A", "INPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
-        run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
-        run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
-        # run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-j", "LOG")
-        run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-j", "DROP")
+    if(s.iptables):
+        _drop_enable_ipt(**locals())
+    else:
+        _drop_enable_nft(**locals())
+
+
+def _drop_enable_nft(ipaddr, resultserver_port):
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp flags", "syn", "tcp dport", resultserver_port, "accept")
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip daddr", ipaddr, "tcp dport", "8000", "accept")
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip daddr", ipaddr, "tcp sport", resultserver_port, "accept")
@@ -655,17 +848,26 @@ def drop_enable(ipaddr, resultserver_port):
     run_nft("add", "rule", "ip", "cape_filter", "output", "ip daddr", ipaddr, "drop")
 
 
+def _drop_enable_ipt(ipaddr, resultserver_port):
+    run_iptables(
+        "-t", "nat", "-I", "PREROUTING", "--source", ipaddr, "-p", "tcp", "--syn", "--dport", resultserver_port, "-j", "ACCEPT"
+    )
+    run_iptables("-A", "INPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
+    run_iptables("-A", "INPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
+    run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
+    run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
+    # run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-j", "LOG")
+    run_iptables("-A", "OUTPUT", "--destination", ipaddr, "-j", "DROP")
+
+
 def drop_disable(ipaddr, resultserver_port):
-    if(False):
-        run_iptables(
-            "-t", "nat", "-D", "PREROUTING", "--source", ipaddr, "-p", "tcp", "--syn", "--dport", resultserver_port, "-j", "ACCEPT"
-        )
-        run_iptables("-D", "INPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
-        run_iptables("-D", "INPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
-        run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
-        run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
-        # run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-j", "LOG")
-        run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-j", "DROP")
+    if(s.iptables):
+        _drop_disable_ipt(**locals())
+    else:
+        _drop_disable_nft(**locals())
+
+
+def _drop_disable_nft(ipaddr, resultserver_port):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp flags syn tcp dport {resultserver_port} accept # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port), chain)
     for handle in handlers:
@@ -683,6 +885,18 @@ def drop_disable(ipaddr, resultserver_port):
     handlers.extend(re.findall(r".*ip daddr {ipaddr} drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
+
+
+def _drop_disable_ipt(ipaddr, resultserver_port):
+    run_iptables(
+        "-t", "nat", "-D", "PREROUTING", "--source", ipaddr, "-p", "tcp", "--syn", "--dport", resultserver_port, "-j", "ACCEPT"
+    )
+    run_iptables("-D", "INPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
+    run_iptables("-D", "INPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
+    run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--dport", "8000", "-j", "ACCEPT")
+    run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-p", "tcp", "--sport", resultserver_port, "-j", "ACCEPT")
+    # run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-j", "LOG")
+    run_iptables("-D", "OUTPUT", "--destination", ipaddr, "-j", "DROP")
 
 
 handlers = {
@@ -724,6 +938,7 @@ if __name__ == "__main__":
     parser.add_argument("--ip", default="/sbin/ip", help="Path to ip")
     parser.add_argument("--nft", default="/sbin/nft", help="Path to nftables binary")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--legacy", action="store_true", help="Switch to use iptables")
     settings = parser.parse_args()
 
     if settings.verbose:
@@ -739,8 +954,11 @@ if __name__ == "__main__":
             "rather than using the Ubuntu/Debian default /bin/systemctl."
         )
 
-    if not settings.iptables or not path_exists(settings.iptables):
+    if settings.legacy and (not settings.iptables or not path_exists(settings.iptables)):
         sys.exit("The `iptables` binary is not available, eh?!")
+
+    if not settings.legacy and (not settings.nft or not path_exists(settings.nft)):
+        sys.exit("The `nft` binary is not available, eh?!")
 
     if os.getuid():
         sys.exit("This utility is supposed to be ran as root.")
@@ -768,11 +986,14 @@ if __name__ == "__main__":
     os.chmod(settings.socket, stat.S_IRUSR | stat.S_IWUSR | stat.S_IWGRP)
 
     # Initialize global variables.
-    s.iptables = settings.iptables
-    s.iptables_save = settings.iptables_save
-    s.iptables_restore = settings.iptables_restore
+    if settings.legacy:
+        s.iptables = settings.iptables
+        s.iptables_save = settings.iptables_save
+        s.iptables_restore = settings.iptables_restore
+    else:
+        s.nft = settings.nft
     s.ip = settings.ip
-    s.nft = settings.nft
+    
 
     # Simple object to allow a signal handler to stop the rooter loop
 
