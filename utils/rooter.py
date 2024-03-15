@@ -22,6 +22,7 @@ if sys.version_info[:2] < (3, 8):
 CUCKOO_ROOT = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..")
 sys.path.append(CUCKOO_ROOT)
 
+from lib.cuckoo.common.exceptions import CuckooNetworkError
 from lib.cuckoo.common.path_utils import path_delete, path_exists
 
 username = False
@@ -67,12 +68,12 @@ def run_iptables(*args):
     iptables_args.extend(["-m", "comment", "--comment", "CAPE-rooter"])
     return run(*iptables_args)
 
+
 def run_nft(*args):
     nft_args = [s.nft]
     nft_args.extend(["-ea"])
     nft_args.extend(list(args))
     return run(*nft_args)
-
 
 
 def cleanup_rooter():
@@ -87,10 +88,10 @@ def cleanup_rooter():
 def _cleanup_rooter_nft():
     run_nft("flush", "table", "cape_filter")
     run_nft("delete", "table", "cape_filter")
-    chain, err = run_nft("list", "chain", "ip", "filter", "forward")
+    chain, err = run_nft("list", "chain", "ip", "filter", "FORWARD")
     handlers = re.findall(r".*meta mark 0x00000f00 accept comment \"cape_filter\" # handle ([0-9]+)", chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "filter", "input", handle)
+        run_nft("delete", "rule", "ip", "filter", "FORWARD", handle)
     run_nft("add", "table", "ip", "cape_filter")
     run_nft("add", "chain", "ip", "cape_filter", "forward", "{type filter hook forward priority 0;}")
     run_nft("add", "chain", "ip", "cape_filter", "input", "{type filter hook input priority 0;}")
@@ -138,6 +139,16 @@ def rt_available(rt_table):
         )
         return True
     except subprocess.CalledProcessError:
+        return False
+
+
+def interface_with_network(srcip):
+    """Check what interface in natwork same as ip."""
+    try:
+        output = subprocess.check_output([settings.ip, "route", "get", srcip])
+        interface = re.search('(?<=(dev ))(\S+)', output.decode())[0]
+        return interface
+    except Exception:
         return False
 
 
@@ -271,7 +282,7 @@ def forward_enable(src, dst, ipaddr):
         _forward_enable_nft(**locals())
 
 
-def _forward_enable_nft(src, dst, ipaddr):
+def _forward_enable_nft(src, dst, ipaddr, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     handlers = re.findall(r".*iifname \"{interface}\" reject # handle ([0-9]+)".format(interface=src), chain)
     handlers.extend(re.findall(r".*oifname \"{interface}\" reject # handle ([0-9]+)".format(interface=src), chain))
@@ -281,7 +292,7 @@ def _forward_enable_nft(src, dst, ipaddr):
     run_nft("add", "rule", "ip", "cape_filter", "forward", "ip daddr", ipaddr, "iifname", dst, "oifname", src, "meta mark set 0x00000f00", "accept")
 
 
-def _forward_enable_ipt(src, dst, ipaddr):
+def _forward_enable_ipt(src, dst, ipaddr, **kwargs):
     # Delete libvirt's default FORWARD REJECT rules. e.g.:
     # -A FORWARD -o virbr0 -j REJECT --reject-with icmp-port-unreachable
     # -A FORWARD -i virbr0 -j REJECT --reject-with icmp-port-unreachable
@@ -300,7 +311,7 @@ def forward_disable(src, dst, ipaddr):
         _forward_disable_nft(**locals())
         
 
-def _forward_disable_nft(src, dst, ipaddr):
+def _forward_disable_nft(src, dst, ipaddr, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     if not err:
         handlers = re.findall(r".*ip saddr {ipaddr} iifname \"{src}\" oifname \"{dst}\" meta mark 0x00000f00 accept # handle ([0-9]+)".format(ipaddr=ipaddr, src=src, dst=dst), chain)
@@ -309,7 +320,7 @@ def _forward_disable_nft(src, dst, ipaddr):
             run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
 
 
-def _forward_disable_ipt(src, dst, ipaddr):
+def _forward_disable_ipt(src, dst, ipaddr, **kwargs):
     run_iptables("-D", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "-j", "ACCEPT")
     run_iptables("-D", "FORWARD", "-i", dst, "-o", src, "--destination", ipaddr, "-j", "ACCEPT")
 
@@ -323,11 +334,11 @@ def forward_reject_enable(src, dst, ipaddr, reject_segments):
         _forward_reject_enable_nft(**locals())
         
     
-def _forward_reject_enable_nft(src, dst, ipaddr, reject_segments):
+def _forward_reject_enable_nft(src, dst, ipaddr, reject_segments, **kwargs):
     run_nft("add", "rule", "ip", "cape_filter", "forward", "ip saddr", ipaddr, "ip daddr", reject_segments, "iifname", src, "oifname", dst, "reject")
 
 
-def _forward_reject_enable_ipt(src, dst, ipaddr, reject_segments):
+def _forward_reject_enable_ipt(src, dst, ipaddr, reject_segments, **kwargs):
     run_iptables("-I", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "--destination", reject_segments, "-j", "REJECT")
 
 
@@ -340,14 +351,14 @@ def forward_reject_disable(src, dst, ipaddr, reject_segments):
         _forward_reject_disable_nft(**locals())
         
 
-def _forward_reject_disable_nft(src, dst, ipaddr, reject_segments):
+def _forward_reject_disable_nft(src, dst, ipaddr, reject_segments, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     handlers = re.findall(r".*ip saddr {ipaddr} ip daddr {reject_segments} iifname \"{src}\" oifname \"{dst}\" reject # handle ([0-9]+)".format(ipaddr=ipaddr, reject_segments=reject_segments, src=src, dst=dst), chain)
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
 
 
-def _forward_reject_disable_ipt(src, dst, ipaddr, reject_segments):
+def _forward_reject_disable_ipt(src, dst, ipaddr, reject_segments, **kwargs):
     run_iptables("-D", "FORWARD", "-i", src, "-o", dst, "--source", ipaddr, "--destination", reject_segments, "-j", "REJECT")
 
 
@@ -359,12 +370,12 @@ def hostports_reject_enable(src, ipaddr, reject_hostports):
         _hostports_reject_enable_nft(**locals())
         
     
-def _hostports_reject_enable_nft(src, ipaddr, reject_hostports):
+def _hostports_reject_enable_nft(src, ipaddr, reject_hostports, **kwargs):
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "tcp dport {", reject_hostports, "} iifname", src, "reject")
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "udp dport {", reject_hostports, "} iifname", src, "reject")
 
 
-def _hostports_reject_enable_ipt(src, ipaddr, reject_hostports):
+def _hostports_reject_enable_ipt(src, ipaddr, reject_hostports, **kwargs):
     run_iptables(
         "-A", "INPUT", "-i", src, "--source", ipaddr, "-p", "tcp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
     )
@@ -381,14 +392,14 @@ def hostports_reject_disable(src, ipaddr, reject_hostports):
         _hostports_reject_disable_nft(**locals())
         
 
-def _hostports_reject_disable_nft(src, ipaddr, reject_hostports):
+def _hostports_reject_disable_nft(src, ipaddr, reject_hostports, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport {reject_hostports} iifname \"{src}\" reject # handle ([0-9]+)".format(ipaddr=ipaddr, reject_hostports=reject_hostports, src=src), chain)
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
 
 
-def _hostports_reject_disable_ipt(src, ipaddr, reject_hostports):
+def _hostports_reject_disable_ipt(src, ipaddr, reject_hostports, **kwargs):
     run_iptables(
         "-D", "INPUT", "-i", src, "--source", ipaddr, "-p", "tcp", "-m", "multiport", "--dport", reject_hostports, "-j", "REJECT"
     )
@@ -417,12 +428,12 @@ def dns_forward(action, vm_ip, dns_ip, dns_port="53"):
         _dns_forward_nft(**locals())
 
 
-def _dns_forward_nft(action, vm_ip, dns_ip, dns_port="53"):
+def _dns_forward_nft(action, vm_ip, dns_ip, dns_port="53", **kwargs):
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", vm_ip, "tcp dport", "53", "dnat to", f"{dns_ip}:{dns_port}")
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", vm_ip, "udp dport", "53", "dnat to", f"{dns_ip}:{dns_port}")
 
 
-def _dns_forward_ipt(action, vm_ip, dns_ip, dns_port="53"):
+def _dns_forward_ipt(action, vm_ip, dns_ip, dns_port="53", **kwargs):
     run_iptables(
         "-t",
         "nat",
@@ -481,12 +492,13 @@ def inetsim_redirect_port(action, srcip, dstip, ports):
                 continue
             else:
                 start_srcport, end_srcport = srcport.split("-")
-                if not start_srcport.isdigit() or not end_srcport.isdigit():
+                if not start_srcport.isdigit() or not end_srcport.isdigit() or start_srcport > end_srcport:
                     log.debug("Invalid inetsim srcport range entry: %s", srcport)
                     continue
                 else:
+                    if(s.iptables):
                     # Good to go! iptables takes port ranges as start:end
-                    srcport = srcport.replace("-", ":")
+                        srcport = srcport.replace("-", ":")
 
         # Handle a single srcport
         else:
@@ -500,7 +512,7 @@ def inetsim_redirect_port(action, srcip, dstip, ports):
             _inetsim_redirect_port_nft(**locals())
         
 
-def _inetsim_redirect_port_nft(action, srcip, dstip, srcport, dstport):
+def _inetsim_redirect_port_nft(action, srcip, dstip, srcport, dstport, **kwargs):
     if(action == "-A"):
         run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", srcip, "tcp dport", srcport, "tcp flags", "syn", "dnat to", f"{dstip}:{dstport}")
     if(action == "-D"):
@@ -510,7 +522,7 @@ def _inetsim_redirect_port_nft(action, srcip, dstip, srcport, dstport):
             run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
 
 
-def _inetsim_redirect_port_ipt(action, srcip, dstip, srcport, dstport):
+def _inetsim_redirect_port_ipt(action, srcip, dstip, srcport, dstport, **kwargs):
     run_iptables(
         "-t",
         "nat",
@@ -539,7 +551,7 @@ def inetsim_service_port_trap(action, srcip, dstip, protocol):
         _inetsim_service_port_trap_nft(**locals())
         
 
-def _inetsim_service_port_trap_nft(action, srcip, dstip, protocol):
+def _inetsim_service_port_trap_nft(action, srcip, dstip, protocol, **kwargs):
     if(action == '-A'):
         run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", srcip, protocol, "dport {7,9,13,17,19,21,22,25,37,69,79,80,110,113,123,443,465,514,990,995,6667}", "dnat to", dstip)
     if(action == "-D"):
@@ -549,7 +561,7 @@ def _inetsim_service_port_trap_nft(action, srcip, dstip, protocol):
             run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
 
 
-def _inetsim_service_port_trap_ipt(action, srcip, dstip, protocol):
+def _inetsim_service_port_trap_ipt(action, srcip, dstip, protocol, **kwargs):
     run_iptables(
         "-t",
         "nat",
@@ -600,7 +612,7 @@ def inetsim_trap(action, ipaddr, inetsim_ip, resultserver_port):
         _inetsim_trap_nft(**locals())
     
 
-def _inetsim_trap_nft(action, ipaddr, inetsim_ip, resultserver_port):
+def _inetsim_trap_nft(action, ipaddr, inetsim_ip, resultserver_port, **kwargs):
     if(action == "-A"):
         run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport !=", resultserver_port, "tcp flags", "syn", "dnat to", f"{inetsim_ip}:1")
         run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "udp dport !=", resultserver_port, "tcp flags", "syn", "dnat to", f"{inetsim_ip}:1")
@@ -613,67 +625,72 @@ def _inetsim_trap_nft(action, ipaddr, inetsim_ip, resultserver_port):
             run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
 
 
-def _inetsim_trap_ipt(action, ipaddr, inetsim_ip, resultserver_port):
+def _inetsim_trap_ipt(action, ipaddr, inetsim_ip, resultserver_port, **kwargs):
     run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "--source",
-            ipaddr,
-            "-p",
-            "tcp",
-            "-m",
-            "tcp",
-            "--syn",
-            "!",
-            "--dport",
-            resultserver_port,
-            "-j",
-            "DNAT",
-            "--to-destination",
-            "%s:%s" % (inetsim_ip, "1"),
-        )
-        # udp
-        run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "--source",
-            ipaddr,
-            "-p",
-            "udp",
-            "!",
-            "--dport",
-            resultserver_port,
-            "-j",
-            "DNAT",
-            "--to-destination",
-            "%s:%s" % (inetsim_ip, "1"),
-        )
-        # icmp
-        run_iptables(
-            "-t",
-            "nat",
-            action,
-            "PREROUTING",
-            "--source",
-            ipaddr,
-            "-p",
-            "icmp",
-            "--icmp-type",
-            "any",
-            "-j",
-            "DNAT",
-            "--to-destination",
-            "%s:%s" % (inetsim_ip, "1"),
-        )
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "--source",
+        ipaddr,
+        "-p",
+        "tcp",
+        "-m",
+        "tcp",
+        "--syn",
+        "!",
+        "--dport",
+        resultserver_port,
+        "-j",
+        "DNAT",
+        "--to-destination",
+        "%s:%s" % (inetsim_ip, "1"),
+    )
+    # udp
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "--source",
+        ipaddr,
+        "-p",
+        "udp",
+        "!",
+        "--dport",
+        resultserver_port,
+        "-j",
+        "DNAT",
+        "--to-destination",
+        "%s:%s" % (inetsim_ip, "1"),
+    )
+    # icmp
+    run_iptables(
+        "-t",
+        "nat",
+        action,
+        "PREROUTING",
+        "--source",
+        ipaddr,
+        "-p",
+        "icmp",
+        "--icmp-type",
+        "any",
+        "-j",
+        "DNAT",
+        "--to-destination",
+        "%s:%s" % (inetsim_ip, "1"),
+    )
 
 
 def inetsim_enable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
     """Enable hijacking of all traffic and send it to InetSIM."""
     log.info("Enabling inetsim route.")
+    if(re.match(r"127\..*", inetsim_ip)):
+        interface = interface_with_network(ipaddr)
+        with open(f"/proc/sys/net/ipv4/conf/{interface}/route_localnet") as f:
+            if(not int(f.read())):
+                raise CuckooNetworkError(f"When redirect to localhost need set route_localnet=1 on interface {interface}")
     inetsim_redirect_port("-A", ipaddr, inetsim_ip, ports)
     inetsim_service_port_trap("-A", ipaddr, inetsim_ip, "tcp")
     inetsim_service_port_trap("-A", ipaddr, inetsim_ip, "udp")
@@ -684,17 +701,15 @@ def inetsim_enable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
         _inetsim_enable_ipt(**locals())
     else:
         _inetsim_enable_nft(**locals())
-        
-    
 
 
-def _inetsim_enable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
-    run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "tcp dport", 22, "drop")
+def _inetsim_enable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports, **kwargs):
+    run_nft("add", "rule", "ip", "cape_filter", "input", "ip saddr", ipaddr, "tcp dport", "22", "drop")
     run_nft("add", "rule", "ip", "cape_filter", "output", "ct state", "invalid", "drop")
     run_nft("add", "rule", "ip", "cape_filter", "output", "ip saddr", ipaddr, "drop")
 
 
-def _inetsim_enable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
+def _inetsim_enable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports, **kwargs):
     run_iptables("-A", "INPUT", "--source", ipaddr, "-p", "tcp", "-m", "tcp", "--dport", "22", "-j", "DROP")
     run_iptables("-A", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
     run_iptables("-A", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
@@ -715,7 +730,7 @@ def inetsim_disable(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
         _inetsim_disable_nft(**locals())
         
 
-def _inetsim_disable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
+def _inetsim_disable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp dport 22 drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain)
     for handle in handlers:
@@ -727,7 +742,7 @@ def _inetsim_disable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports)
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
 
 
-def _inetsim_disable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports):
+def _inetsim_disable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports, **kwargs):
     run_iptables("-D", "INPUT", "--source", ipaddr, "-p", "tcp", "-m", "tcp", "--dport", "22", "-j", "DROP")
     run_iptables("-D", "OUTPUT", "-m", "conntrack", "--ctstate", "INVALID", "-j", "DROP")
     run_iptables("-D", "OUTPUT", "-m", "state", "--state", "INVALID", "-j", "DROP")
@@ -743,15 +758,15 @@ def socks5_enable(ipaddr, resultserver_port, dns_port, proxy_port):
         _socks5_enable_nft(**locals())
 
 
-def _socks5_enable_nft(ipaddr, resultserver_port, dns_port, proxy_port):
+def _socks5_enable_nft(ipaddr, resultserver_port, dns_port, proxy_port, **kwargs):
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp flags", "syn", "tcp dport !=", resultserver_port, "redirect to", proxy_port)
     run_nft("insert", "rule", "ip", "cape_filter", "output", "ct state", "invalid", "drop")
-    run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport", 53, "redirect to", dns_port)
-    run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "udp dport", 53, "redirect to", dns_port)
+    run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport", "53", "redirect to", dns_port)
+    run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "udp dport", "53", "redirect to", dns_port)
     run_nft("add", "rule", "ip", "cape_filter", "output", "ip saddr", ipaddr, "drop")
 
 
-def _socks5_enable_ipt(ipaddr, resultserver_port, dns_port, proxy_port):
+def _socks5_enable_ipt(ipaddr, resultserver_port, dns_port, proxy_port, **kwargs):
     run_iptables(
         "-t",
         "nat",
@@ -790,7 +805,7 @@ def socks5_disable(ipaddr, resultserver_port, dns_port, proxy_port):
         _socks5_disable_nft(**locals())
 
 
-def _socks5_disable_nft(ipaddr, resultserver_port, dns_port, proxy_port):
+def _socks5_disable_nft(ipaddr, resultserver_port, dns_port, proxy_port, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp flags syn tcp dport != {resultserver_port} redirect to {proxy_port} # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port, proxy_port=proxy_port), chain)
     handlers.extend(re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport 53 redirect to {dns_port} # handle ([0-9]+)".format(ipaddr=ipaddr, dns_port=dns_port), chain))
@@ -802,7 +817,7 @@ def _socks5_disable_nft(ipaddr, resultserver_port, dns_port, proxy_port):
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
 
 
-def _socks5_disable_ipt(ipaddr, resultserver_port, dns_port, proxy_port):
+def _socks5_disable_ipt(ipaddr, resultserver_port, dns_port, proxy_port, **kwargs):
     run_iptables(
         "-t",
         "nat",
@@ -839,7 +854,7 @@ def drop_enable(ipaddr, resultserver_port):
         _drop_enable_nft(**locals())
 
 
-def _drop_enable_nft(ipaddr, resultserver_port):
+def _drop_enable_nft(ipaddr, resultserver_port, **kwargs):
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp flags", "syn", "tcp dport", resultserver_port, "accept")
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip daddr", ipaddr, "tcp dport", "8000", "accept")
     run_nft("add", "rule", "ip", "cape_filter", "input", "ip daddr", ipaddr, "tcp sport", resultserver_port, "accept")
@@ -848,7 +863,7 @@ def _drop_enable_nft(ipaddr, resultserver_port):
     run_nft("add", "rule", "ip", "cape_filter", "output", "ip daddr", ipaddr, "drop")
 
 
-def _drop_enable_ipt(ipaddr, resultserver_port):
+def _drop_enable_ipt(ipaddr, resultserver_port, **kwargs):
     run_iptables(
         "-t", "nat", "-I", "PREROUTING", "--source", ipaddr, "-p", "tcp", "--syn", "--dport", resultserver_port, "-j", "ACCEPT"
     )
@@ -867,7 +882,7 @@ def drop_disable(ipaddr, resultserver_port):
         _drop_disable_nft(**locals())
 
 
-def _drop_disable_nft(ipaddr, resultserver_port):
+def _drop_disable_nft(ipaddr, resultserver_port, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp flags syn tcp dport {resultserver_port} accept # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port), chain)
     for handle in handlers:
@@ -887,7 +902,7 @@ def _drop_disable_nft(ipaddr, resultserver_port):
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
 
 
-def _drop_disable_ipt(ipaddr, resultserver_port):
+def _drop_disable_ipt(ipaddr, resultserver_port, **kwargs):
     run_iptables(
         "-t", "nat", "-D", "PREROUTING", "--source", ipaddr, "-p", "tcp", "--syn", "--dport", resultserver_port, "-j", "ACCEPT"
     )
