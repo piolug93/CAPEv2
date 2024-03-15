@@ -91,7 +91,7 @@ def _cleanup_rooter_nft():
     chain, err = run_nft("list", "chain", "ip", "filter", "FORWARD")
     handlers = re.findall(r".*meta mark 0x00000f00 accept comment \"cape_filter\" # handle ([0-9]+)", chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "filter", "FORWARD", handle)
+        run_nft("delete", "rule", "ip", "filter", "FORWARD", "handle", handle)
     run_nft("add", "table", "ip", "cape_filter")
     run_nft("add", "chain", "ip", "cape_filter", "forward", "{type filter hook forward priority 0;}")
     run_nft("add", "chain", "ip", "cape_filter", "input", "{type filter hook input priority 0;}")
@@ -208,7 +208,7 @@ def _state_disable_nft():
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ct state established,related accept # handle ([0-9]+)", chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "input", "handle", handle)
 
 
 def _state_disable_ipt():
@@ -246,7 +246,7 @@ def _disable_nat_nft(interface):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "postrouting")
     handlers = re.findall(r".*oifname \"{interface}\" masquerade # handle ([0-9]+)".format(interface=interface), chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "input", "handle", handle)
 
 
 def _disable_nat_ipt(interface):
@@ -288,7 +288,7 @@ def _forward_enable_nft(src, dst, ipaddr, **kwargs):
     handlers = re.findall(r".*iifname \"{interface}\" reject # handle ([0-9]+)".format(interface=src), chain)
     handlers.extend(re.findall(r".*oifname \"{interface}\" reject # handle ([0-9]+)".format(interface=src), chain))
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "forward", "handle", handle)
     run_nft("add", "rule", "ip", "cape_filter", "forward", "ip saddr", ipaddr, "iifname", src, "oifname", dst, "meta mark set 0x00000f00", "accept")
     run_nft("add", "rule", "ip", "cape_filter", "forward", "ip daddr", ipaddr, "iifname", dst, "oifname", src, "meta mark set 0x00000f00", "accept")
 
@@ -318,7 +318,7 @@ def _forward_disable_nft(src, dst, ipaddr, **kwargs):
         handlers = re.findall(r".*ip saddr {ipaddr} iifname \"{src}\" oifname \"{dst}\" meta mark 0x00000f00 accept # handle ([0-9]+)".format(ipaddr=ipaddr, src=src, dst=dst), chain)
         handlers.extend(re.findall(r".*ip daddr {ipaddr} iifname \"{dst}\" oifname \"{src}\" meta mark 0x00000f00 accept # handle ([0-9]+)".format(ipaddr=ipaddr, src=src, dst=dst), chain))
         for handle in handlers:
-            run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
+            run_nft("delete", "rule", "ip", "cape_filter", "forward", "handle", handle)
 
 
 def _forward_disable_ipt(src, dst, ipaddr, **kwargs):
@@ -356,7 +356,7 @@ def _forward_reject_disable_nft(src, dst, ipaddr, reject_segments, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "forward")
     handlers = re.findall(r".*ip saddr {ipaddr} ip daddr {reject_segments} iifname \"{src}\" oifname \"{dst}\" reject # handle ([0-9]+)".format(ipaddr=ipaddr, reject_segments=reject_segments, src=src, dst=dst), chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "forward", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "forward", "handle", handle)
 
 
 def _forward_reject_disable_ipt(src, dst, ipaddr, reject_segments, **kwargs):
@@ -397,7 +397,7 @@ def _hostports_reject_disable_nft(src, ipaddr, reject_hostports, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport {reject_hostports} iifname \"{src}\" reject # handle ([0-9]+)".format(ipaddr=ipaddr, reject_hostports=reject_hostports, src=src), chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "input", "handle", handle)
 
 
 def _hostports_reject_disable_ipt(src, ipaddr, reject_hostports, **kwargs):
@@ -520,7 +520,7 @@ def _inetsim_redirect_port_nft(action, srcip, dstip, srcport, dstport, **kwargs)
         chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
         handlers = re.findall(r".*ip saddr {srcip} tcp dport {srcport} tcp flags syn dnat to {dstip}:{dstport} # handle ([0-9]+)".format(srcip=srcip, srcport=srcport, dstip=dstip, dstport=dstport), chain)
         for handle in handlers:
-            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", "handle", handle)
 
 
 def _inetsim_redirect_port_ipt(action, srcip, dstip, srcport, dstport, **kwargs):
@@ -559,7 +559,7 @@ def _inetsim_service_port_trap_nft(action, srcip, dstip, protocol, **kwargs):
         chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
         handlers = re.findall(r".*ip saddr {srcip} {protocol} dport {7,9,13,17,19,21,22,25,37,69,79,80,110,113,123,443,465,514,990,995,6667} dnat to {dstip} # handle ([0-9]+)".format(srcip=srcip, protocol=protocol, dstip=dstip), chain)
         for handle in handlers:
-            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", "handle", handle)
 
 
 def _inetsim_service_port_trap_ipt(action, srcip, dstip, protocol, **kwargs):
@@ -623,7 +623,7 @@ def _inetsim_trap_nft(action, ipaddr, inetsim_ip, resultserver_port, **kwargs):
         handlers = re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport != {resultserver_port} tcp flags syn dnat to {inetsim_ip}:1 # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port, inetsim_ip=inetsim_ip), chain)
         handlers.extend(re.findall(r".*ip saddr {ipaddr} icmp dnat to {inetsim_ip}:1 # handle ([0-9]+)".format(ipaddr=ipaddr, inetsim_ip=inetsim_ip), chain))
         for handle in handlers:
-            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+            run_nft("delete", "rule", "ip", "cape_filter", "prerouting", "handle", handle)
 
 
 def _inetsim_trap_ipt(action, ipaddr, inetsim_ip, resultserver_port, **kwargs):
@@ -735,12 +735,12 @@ def _inetsim_disable_nft(ipaddr, inetsim_ip, dns_port, resultserver_port, ports,
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp dport 22 drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "input", "handle", handle)
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "output")
     handlers = re.findall(r".*ct state invalid drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain)
     handlers.extend(re.findall(r".*ip saddr {ipaddr} drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "output", "handle", handle)
 
 
 def _inetsim_disable_ipt(ipaddr, inetsim_ip, dns_port, resultserver_port, ports, **kwargs):
@@ -811,12 +811,12 @@ def _socks5_disable_nft(ipaddr, resultserver_port, dns_port, proxy_port, **kwarg
     handlers = re.findall(r".*ip saddr {ipaddr} tcp flags syn tcp dport != {resultserver_port} redirect to {proxy_port} # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port, proxy_port=proxy_port), chain)
     handlers.extend(re.findall(r".*ip saddr {ipaddr} (?:tcp|udp) dport 53 redirect to {dns_port} # handle ([0-9]+)".format(ipaddr=ipaddr, dns_port=dns_port), chain))
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "prerouting", "handle", "handle", handle)
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "output")
     handlers = re.findall(r".*ct state invalid drop # handle ([0-9]+)", chain)
     handlers.extend(re.findall(r",*ip saddr {ipaddr} drop #  handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "output", "handle", handle)
 
 
 def _socks5_disable_ipt(ipaddr, resultserver_port, dns_port, proxy_port, **kwargs):
@@ -888,20 +888,20 @@ def _drop_disable_nft(ipaddr, resultserver_port, **kwargs):
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "prerouting")
     handlers = re.findall(r".*ip saddr {ipaddr} tcp flags syn tcp dport {resultserver_port} accept # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port), chain)
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "prerouting", "handle", handle)
 
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "input")
     handlers = re.findall(r".*ip daddr {ipaddr} tcp sport {resultserver_port} accept # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port), chain)
     handlers.extend(re.findall(r".*ip daddr {ipaddr} tcp dport 8000 accept # handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "input", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "input", "handle", handle)
 
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "output")
     handlers = re.findall(r".*ip daddr {ipaddr} tcp sport {resultserver_port} accept # handle ([0-9]+)".format(ipaddr=ipaddr, resultserver_port=resultserver_port), chain)
     handlers.extend(re.findall(r".*ip daddr {ipaddr} tcp dport 8000 accept # handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     handlers.extend(re.findall(r".*ip daddr {ipaddr} drop # handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     for handle in handlers:
-        run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
+        run_nft("delete", "rule", "ip", "cape_filter", "output", "handle", handle)
 
 
 def _drop_disable_ipt(ipaddr, resultserver_port, **kwargs):
