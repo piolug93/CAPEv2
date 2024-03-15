@@ -98,6 +98,7 @@ def _cleanup_rooter_nft():
     run_nft("add", "chain", "ip", "cape_filter", "postrouting", "{type nat hook postrouting priority 100;}")
     run_nft("add", "chain", "ip", "cape_filter", "prerouting", "{type nat hook prerouting priority -100;}")
     run_nft("add", "chain", "ip", "cape_filter", "output", "{type filter hook output priority 0;}")
+    run_nft("add rule ip cape_filter prerouting meta nftrace set 1")
     
 
 def _cleanup_rooter_ipt():
@@ -759,7 +760,7 @@ def socks5_enable(ipaddr, resultserver_port, dns_port, proxy_port):
 
 
 def _socks5_enable_nft(ipaddr, resultserver_port, dns_port, proxy_port, **kwargs):
-    run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp flags", "syn", "tcp dport !=", resultserver_port, "redirect to", proxy_port)
+    run_nft("insert", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp flags", "syn", "tcp dport !=", resultserver_port, "redirect to", proxy_port)
     run_nft("insert", "rule", "ip", "cape_filter", "output", "ct state", "invalid", "drop")
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "tcp dport", "53", "redirect to", dns_port)
     run_nft("add", "rule", "ip", "cape_filter", "prerouting", "ip saddr", ipaddr, "udp dport", "53", "redirect to", dns_port)
@@ -813,6 +814,7 @@ def _socks5_disable_nft(ipaddr, resultserver_port, dns_port, proxy_port, **kwarg
         run_nft("delete", "rule", "ip", "cape_filter", "prerouting", handle)
     chain, err = run_nft("list", "chain", "ip", "cape_filter", "output")
     handlers = re.findall(r".*ct state invalid drop # handle ([0-9]+)", chain)
+    handlers.extend(re.findall(r",*ip saddr {ipaddr} drop #  handle ([0-9]+)".format(ipaddr=ipaddr), chain))
     for handle in handlers:
         run_nft("delete", "rule", "ip", "cape_filter", "output", handle)
 
